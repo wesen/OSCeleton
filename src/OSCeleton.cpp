@@ -2,6 +2,7 @@
 
     OSCeleton - OSC proxy for kinect skeleton data.
     Copyright (C) <2010>  <Sensebloom lda.>
+    Copyright (C) <2011>  <wesen@ruinwesen.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -21,6 +22,17 @@
 
 #include <cstdio>
 #include <csignal>
+#include <iostream>
+#include <map>
+#include <stdexcept>
+
+#include <string.h>
+#include <inttypes.h>
+#include <limits.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <stdlib.h>
+#include <errno.h>
 
 #include <XnCppWrapper.h>
 
@@ -29,6 +41,171 @@
 
 #include "common.h"
 
+/***************************************************************************
+ *
+ * Joint descriptions to map joint messages to OSC
+ *
+ ***************************************************************************/
+
+using namespace std;
+
+typedef struct joint_desc_s {
+	XnSkeletonJoint joint;
+	char *joint_name;
+} joint_desc_t;
+
+class TranslationParseException : public std::runtime_error {
+public:
+	TranslationParseException() : std::runtime_error("TranslationParseException") { }
+};
+
+#define MIN(a, b) ((a) > (b) ? (b) : (a))
+
+class OSCMessageTranslation {
+public:
+	string addressPattern;
+	int dimension;
+
+public:
+	OSCMessageTranslation(char *_addr, uint8_t _dimension) : addressPattern(_addr), dimension(_dimension) {
+	}
+
+	OSCMessageTranslation(char *str) {
+		char *split = strchr(str, ' ');
+		if (split == NULL) {
+			throw TranslationParseException();
+		}
+		dimension = strtol(split + 1, NULL, 10);
+		if ((dimension == 0) && (errno == EINVAL)) {
+			throw TranslationParseException();
+		}
+		if (dimension >= 3) {
+			throw TranslationParseException();
+		}
+		char buf[256];
+		int len = split - str;
+		strncpy(buf, str, MIN(split - str, sizeof(buf) - 1));
+		buf[len] = 0;
+		addressPattern = buf;
+	}
+		
+	void sendOSC(osc::OutboundPacketStream *p, int userID, float coords[3]) {
+		cout << "sendOSC " << addressPattern << " " << dimension << " " << coords[dimension] << endl;
+		*p << osc::BeginMessage(addressPattern.c_str());
+		if (dimension < 3) {
+			*p << coords[dimension];
+		}
+		*p << osc::EndMessage;
+	}
+};
+
+std::ostream& operator<<(std::ostream &o, OSCMessageTranslation const& tx) {
+	return o << "oscTX<" << tx.addressPattern << "(" << tx.dimension << ")>";
+}
+	
+class JointDescriptions {
+protected:
+	map<XnSkeletonJoint, char *> jointToName;
+	map<string, XnSkeletonJoint> nameToJoint;
+	multimap<XnSkeletonJoint, OSCMessageTranslation> oscTranslations;
+
+public:
+	JointDescriptions() {
+		/* initialize joint descriptions */
+		addJointDescription(XN_SKEL_HEAD, "head");
+		addJointDescription(XN_SKEL_NECK, "neck");
+		addJointDescription(XN_SKEL_TORSO, "torso");
+		addJointDescription(XN_SKEL_WAIST, "waist");
+		
+		addJointDescription(XN_SKEL_LEFT_COLLAR, "l_collar");
+		addJointDescription(XN_SKEL_LEFT_SHOULDER, "l_shoulder");
+		addJointDescription(XN_SKEL_LEFT_ELBOW, "l_elbow");
+		addJointDescription(XN_SKEL_LEFT_WRIST, "l_wrist");
+		addJointDescription(XN_SKEL_LEFT_HAND, "l_hand");
+		addJointDescription(XN_SKEL_LEFT_FINGERTIP, "l_fingertip");
+		addJointDescription(XN_SKEL_LEFT_HIP, "l_hip");
+		addJointDescription(XN_SKEL_LEFT_KNEE, "l_knee");
+		addJointDescription(XN_SKEL_LEFT_ANKLE, "l_ankle");
+		addJointDescription(XN_SKEL_LEFT_FOOT, "l_foot");
+
+		addJointDescription(XN_SKEL_RIGHT_COLLAR, "r_collar");
+		addJointDescription(XN_SKEL_RIGHT_SHOULDER, "r_shoulder");
+		addJointDescription(XN_SKEL_RIGHT_ELBOW, "r_elbow");
+		addJointDescription(XN_SKEL_RIGHT_WRIST, "r_wrist");
+		addJointDescription(XN_SKEL_RIGHT_HAND, "r_hand");
+		addJointDescription(XN_SKEL_RIGHT_FINGERTIP, "r_fingertip");
+		addJointDescription(XN_SKEL_RIGHT_HIP, "r_hip");
+		addJointDescription(XN_SKEL_RIGHT_KNEE, "r_knee");
+		addJointDescription(XN_SKEL_RIGHT_ANKLE, "r_ankle");
+		addJointDescription(XN_SKEL_RIGHT_FOOT, "r_foot");
+
+		addOSCTranslation("head", "/mxw/foobar 0");
+	}
+
+	void addJointDescription(XnSkeletonJoint joint, char *name) {
+		jointToName[joint] = name;
+		nameToJoint[name] = joint;
+	}
+
+	char *getJointName(XnSkeletonJoint joint) {
+		map<XnSkeletonJoint, char *>::iterator it;
+		it = jointToName.find(joint);
+		if (it == jointToName.end()) {
+			return NULL;
+		} else {
+			return (*it).second;
+		}
+	}
+
+	XnSkeletonJoint getNameJoint(char *name) {
+		map<string, XnSkeletonJoint>::iterator it;
+		it = nameToJoint.find(name);
+		if (it == nameToJoint.end()) {
+			return XnSkeletonJoint(0);
+		} else {
+			return (*it).second;
+		}
+	}
+
+	void addOSCTranslation(char *jointName, char *oscString) {
+		XnSkeletonJoint joint = getNameJoint(jointName);
+		if (joint == XnSkeletonJoint(0)) {
+			cerr << "Could not find joint named " << jointName << endl;
+			return;
+		}
+
+		OSCMessageTranslation tx(oscString);
+		oscTranslations.insert(pair<XnSkeletonJoint, OSCMessageTranslation>(joint, tx));
+	}
+
+	void sendOSC(XnSkeletonJoint joint, osc::OutboundPacketStream *p, int userID, float coords[3]) {
+		multimap<XnSkeletonJoint, OSCMessageTranslation>::iterator it;
+		for (it = oscTranslations.begin(); it != oscTranslations.end(); it++) {
+			it->second.sendOSC(p, userID, coords);
+		}
+	}
+
+	/* iterate over the joint types */
+	map<XnSkeletonJoint, char*>::iterator begin() {
+		return jointToName.begin();
+	}
+
+	map<XnSkeletonJoint, char*>::iterator end() {
+		return jointToName.end();
+	}
+	
+	~JointDescriptions() {
+	}
+	
+};
+
+JointDescriptions jointDescriptions;
+
+/***************************************************************************
+ *
+ * OSCeleton stuff
+ *
+ ***************************************************************************/
 
 char *ADDRESS = "127.0.0.1";
 int PORT = 7110;
@@ -72,7 +249,11 @@ xn::DepthMetaData depthMD;
 xn::UserGenerator userGenerator;
 XnChar g_strPose[20] = "";
 
-
+/***************************************************************************
+ *
+ * OPENNI callbacks
+ *
+ ***************************************************************************/
 
 // Callback: New user was detected
 void XN_CALLBACK_TYPE new_user(xn::UserGenerator& generator, XnUserID nId, void* pCookie) {
@@ -148,7 +329,17 @@ void XN_CALLBACK_TYPE calibration_ended(xn::SkeletonCapability& capability, XnUs
 }
 
 
+/***************************************************************************
+ *
+ * Main OSC loop
+ *
+ ***************************************************************************/
 
+
+/**
+ * Get the joint position for the specified player and the specified
+ * joint, and store them in global variables.
+ **/
 int jointPos(XnUserID player, XnSkeletonJoint eJoint) {
 	XnSkeletonJointPosition joint;
 	userGenerator.GetSkeletonCap().GetSkeletonJointPosition(player, eJoint, joint);
@@ -167,8 +358,6 @@ int jointPos(XnUserID player, XnSkeletonJoint eJoint) {
 	return 0;
 }
 
-
-
 // Generate OSC message with default format
 void genOscMsg(osc::OutboundPacketStream *p, char *name) {
 	*p << osc::BeginMessage( "/joint" );
@@ -181,8 +370,6 @@ void genOscMsg(osc::OutboundPacketStream *p, char *name) {
 	//	*p << (float)jointRots[i];
 	*p << osc::EndMessage;
 }
-
-
 
 // Generate OSC message with Quartz Composer format - based on Steve Elbows's code ;)
 void genQCMsg(osc::OutboundPacketStream *p, char *name) {
@@ -211,7 +398,6 @@ void sendUserPosMsg(XnUserID id) {
 }
 
 
-
 void sendOSC() {
 	XnUserID aUsers[15];
 	XnUInt16 nUsers = 15;
@@ -221,81 +407,18 @@ void sendOSC() {
 			osc::OutboundPacketStream p(osc_buffer, OUTPUT_BUFFER_SIZE);
 			p << osc::BeginBundleImmediate;
 
-			if (jointPos(aUsers[i], XN_SKEL_HEAD) == 0) {
-				oscFunc(&p, "head");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_NECK) == 0) {
-				oscFunc(&p, "neck");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_LEFT_COLLAR) == 0) {
-				oscFunc(&p, "l_collar");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_LEFT_SHOULDER) == 0) {
-				oscFunc(&p, "l_shoulder");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_LEFT_ELBOW) == 0) {
-				oscFunc(&p, "l_elbow");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_LEFT_WRIST) == 0) {
-				oscFunc(&p, "l_wrist");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_LEFT_HAND) == 0) {
-				oscFunc(&p, "l_hand");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_LEFT_FINGERTIP) == 0) {
-				oscFunc(&p, "l_fingertip");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_RIGHT_COLLAR) == 0) {
-				oscFunc(&p, "r_collar");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_RIGHT_SHOULDER) == 0) {
-				oscFunc(&p, "r_shoulder");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_RIGHT_ELBOW) == 0) {
-				oscFunc(&p, "r_elbow");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_RIGHT_WRIST) == 0) {
-				oscFunc(&p, "r_wrist");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_RIGHT_HAND) == 0) {
-				oscFunc(&p, "r_hand");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_RIGHT_FINGERTIP) == 0) {
-				oscFunc(&p, "r_fingertip");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_TORSO) == 0) {
-				oscFunc(&p, "torso");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_WAIST) == 0) {
-				oscFunc(&p, "waist");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_LEFT_HIP) == 0) {
-				oscFunc(&p, "l_hip");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_LEFT_KNEE) == 0) {
-				oscFunc(&p, "l_knee");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_LEFT_ANKLE) == 0) {
-				oscFunc(&p, "l_ankle");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_LEFT_FOOT) == 0) {
-				oscFunc(&p, "l_foot");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_RIGHT_HIP) == 0) {
-				oscFunc(&p, "r_hip");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_RIGHT_KNEE) == 0) {
-				oscFunc(&p, "r_knee");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_RIGHT_ANKLE) == 0) {
-				oscFunc(&p, "r_ankle");
-			}
-			if (jointPos(aUsers[i], XN_SKEL_RIGHT_FOOT) == 0) {
-				oscFunc(&p, "r_foot");
+			map<XnSkeletonJoint, char *>::iterator it;
+
+			for (it = jointDescriptions.begin(); it != jointDescriptions.end(); it++) {
+				XnSkeletonJoint joint = it->first;
+				if (jointPos(aUsers[i], joint) == 0) {
+					jointDescriptions.sendOSC(joint, &p, userID, jointCoords);
+					oscFunc(&p, it->second);
+				}
 			}
 
 			p << osc::EndBundle;
-		    transmitSocket->Send(p.Data(), p.Size());
+			transmitSocket->Send(p.Data(), p.Size());
 		}
 		else {
 			//Send user's center of mass
@@ -304,7 +427,11 @@ void sendOSC() {
 	}
 }
 
-
+/***************************************************************************
+ *
+ * Program help and initialization
+ *
+ ***************************************************************************/
 
 int usage(char *name) {
 	printf("\nUsage: %s [OPTIONS]\n\
@@ -344,7 +471,6 @@ are correctly installed.\n\n");
 		exit(1);
 	}
 }
-
 
 
 void terminate(int ignored) {
@@ -504,8 +630,10 @@ int main(int argc, char **argv) {
 	if (oscFunc == NULL)
 		oscFunc = genOscMsg;
 
+	/* initialize depth generator */
 	checkRetVal(depth.Create(context));
 
+	/* if not playing back, set kinect resolution */
 	if (!play) {
 		mapMode.nXRes = XN_VGA_X_RES;
 		mapMode.nYRes = XN_VGA_Y_RES;
@@ -513,6 +641,7 @@ int main(int argc, char **argv) {
 		depth.SetMapOutputMode(mapMode);
 	}
 
+	/* create the user generator */
 	nRetVal = context.FindExistingNode(XN_NODE_TYPE_USER, userGenerator);
 	if (nRetVal != XN_STATUS_OK)
 		nRetVal = userGenerator.Create(context);
