@@ -18,6 +18,7 @@
 
 ***********************************************************************/
 
+
 #include <cstdio>
 #include <csignal>
 
@@ -27,7 +28,6 @@
 #include <osc/OscOutboundPacketStream.h>
 
 #include "common.h"
-
 
 
 char *ADDRESS = "127.0.0.1";
@@ -560,3 +560,8 @@ int main(int argc, char **argv) {
 	terminate(0);
 }
 
+/* Local Variables: */
+/* mode: c++ */
+/* indent-tabs-mode: t */
+/* tab-width: 2 */
+/* End: */
