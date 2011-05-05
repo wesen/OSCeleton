@@ -23,8 +23,11 @@
 #include <cstdio>
 #include <csignal>
 #include <iostream>
+#include <fstream>
 #include <map>
 #include <stdexcept>
+#include <vector>
+#include <sstream>
 
 #include <string.h>
 #include <inttypes.h>
@@ -40,6 +43,41 @@
 #include <osc/OscOutboundPacketStream.h>
 
 #include "common.h"
+
+/***************************************************************************
+ *
+ * Helper functions
+ *
+ ***************************************************************************/
+// trim from start
+static inline std::string &ltrim(std::string &s) {
+	s.erase(s.begin(), std::find_if(s.begin(), s.end(), std::not1(std::ptr_fun<int, int>(std::isspace))));
+	return s;
+}
+
+// trim from end
+static inline std::string &rtrim(std::string &s) {
+	s.erase(std::find_if(s.rbegin(), s.rend(), std::not1(std::ptr_fun<int, int>(std::isspace))).base(), s.end());
+	return s;
+}
+
+static inline std::string &trim(std::string &s) {
+	return ltrim(rtrim(s));
+}
+
+std::vector<std::string> &split(const std::string &s, char delim, std::vector<std::string> &elems) {
+    std::stringstream ss(s);
+    std::string item;
+    while(std::getline(ss, item, delim)) {
+        elems.push_back(item);
+    }
+    return elems;
+}
+
+std::vector<std::string> split(const std::string &s, char delim) {
+    std::vector<std::string> elems;
+    return split(s, delim, elems);
+}
 
 /***************************************************************************
  *
@@ -70,7 +108,7 @@ public:
 	OSCMessageTranslation(char *_addr, uint8_t _dimension) : addressPattern(_addr), dimension(_dimension) {
 	}
 
-	OSCMessageTranslation(char *str) {
+	OSCMessageTranslation(const char *str) {
 		char *split = strchr(str, ' ');
 		if (split == NULL) {
 			throw TranslationParseException();
@@ -90,7 +128,6 @@ public:
 	}
 		
 	void sendOSC(osc::OutboundPacketStream *p, int userID, float coords[3]) {
-		cout << "sendOSC " << addressPattern << " " << dimension << " " << coords[dimension] << endl;
 		*p << osc::BeginMessage(addressPattern.c_str());
 		if (dimension < 3) {
 			*p << coords[dimension];
@@ -138,8 +175,6 @@ public:
 		addJointDescription(XN_SKEL_RIGHT_KNEE, "r_knee");
 		addJointDescription(XN_SKEL_RIGHT_ANKLE, "r_ankle");
 		addJointDescription(XN_SKEL_RIGHT_FOOT, "r_foot");
-
-		addOSCTranslation("head", "/mxw/foobar 0");
 	}
 
 	void addJointDescription(XnSkeletonJoint joint, char *name) {
@@ -157,7 +192,7 @@ public:
 		}
 	}
 
-	XnSkeletonJoint getNameJoint(char *name) {
+	XnSkeletonJoint getNameJoint(const char *name) {
 		map<string, XnSkeletonJoint>::iterator it;
 		it = nameToJoint.find(name);
 		if (it == nameToJoint.end()) {
@@ -167,7 +202,31 @@ public:
 		}
 	}
 
-	void addOSCTranslation(char *jointName, char *oscString) {
+	void parseConfigFile(char *filename) {
+		ifstream myfile(filename);
+		if (myfile.is_open()) {
+			while (myfile.good()) {
+				string line;
+				getline(myfile, line);
+				line = trim(line);
+				if (line[0] == '#') {
+					continue;
+				}
+				vector<string> elems = split(line, '=');
+				if (elems.size() == 2) {
+					string joint = trim(elems[0]);
+					string oscMessage = trim(elems[1]);
+					addOSCTranslation(joint.c_str(), oscMessage.c_str());
+				}
+			}
+			myfile.close();
+		} else {
+			cerr << "Could not open file " << filename << endl;
+			throw TranslationParseException();
+		}
+	}
+	
+	void addOSCTranslation(const char *jointName, const char *oscString) {
 		XnSkeletonJoint joint = getNameJoint(jointName);
 		if (joint == XnSkeletonJoint(0)) {
 			cerr << "Could not find joint named " << jointName << endl;
@@ -176,11 +235,12 @@ public:
 
 		OSCMessageTranslation tx(oscString);
 		oscTranslations.insert(pair<XnSkeletonJoint, OSCMessageTranslation>(joint, tx));
+		cout << "added " << tx << endl;
 	}
 
 	void sendOSC(XnSkeletonJoint joint, osc::OutboundPacketStream *p, int userID, float coords[3]) {
 		multimap<XnSkeletonJoint, OSCMessageTranslation>::iterator it;
-		for (it = oscTranslations.begin(); it != oscTranslations.end(); it++) {
+		for (it = oscTranslations.find(joint); it != oscTranslations.end(); it++) {
 			it->second.sendOSC(p, userID, coords);
 		}
 	}
@@ -270,8 +330,6 @@ void XN_CALLBACK_TYPE new_user(xn::UserGenerator& generator, XnUserID nId, void*
 	p << osc::EndBundle;
 	transmitSocket->Send(p.Data(), p.Size());
 }
-
-
 
 // Callback: An existing user was lost
 void XN_CALLBACK_TYPE lost_user(xn::UserGenerator& generator, XnUserID nId, void* pCookie) {
@@ -413,7 +471,7 @@ void sendOSC() {
 				XnSkeletonJoint joint = it->first;
 				if (jointPos(aUsers[i], joint) == 0) {
 					jointDescriptions.sendOSC(joint, &p, userID, jointCoords);
-					oscFunc(&p, it->second);
+					//					oscFunc(&p, it->second);
 				}
 			}
 
@@ -456,6 +514,7 @@ Options:\n\
   -s <file>\t Save to file (only .oni supported at the moment).\n\
   -i <file>\t Play from file (only .oni supported at the moment).\n\
   -h\t\t Show help.\n\n\
+  -F <file>\t Add OSC translations from file\n\
 For a more detailed explanation of options consult the README file.\n\n",
 		   name, name);
 	exit(1);
@@ -507,15 +566,16 @@ int main(int argc, char **argv) {
 
 	while ((arg < argc) && (argv[arg][0] == '-')) {
 		switch (argv[arg][1]) {
-			case 'a':
-			case 'p':
-			case 'm':
-			case 'o':
-				require_argument = 1;
-				break;
-			default:
-				require_argument = 0;
-				break;
+		case 'a':
+		case 'p':
+		case 'm':
+		case 'o':
+		case 'F':
+			require_argument = 1;
+			break;
+		default:
+			require_argument = 0;
+			break;
 		}
 
 		if ( require_argument && arg+1 >= argc ) {
@@ -527,29 +587,39 @@ int main(int argc, char **argv) {
 		case 'h':
 			usage(argv[0]);
 			break;
+
 		case 'a': //Set ip address
 			ADDRESS = argv[arg+1];
 			break;
+
 		case 'p': //Set port
 			if(sscanf(argv[arg+1], "%d", &PORT) == EOF ) {
 				printf("Bad port number given.\n");
 				usage(argv[0]);
 			}
 			break;
+
 		case 'w':
 			preview = true;
 			break;
+
 		case 's':
 			checkRetVal(recorder.Create(context));
 			checkRetVal(recorder.SetDestination(XN_RECORD_MEDIUM_FILE, argv[arg+1]));
 			record = true;
 			arg++;
 			break;
+
 		case 'i':
 			checkRetVal(context.OpenFileRecording(argv[arg+1]));
 			play = true;
 			arg++;
 			break;
+
+		case 'F':
+			jointDescriptions.parseConfigFile(argv[arg+1]);
+			break;
+			
 		case 'm': //Set multipliers
 			switch(argv[arg][2]) {
 			case 'x': // Set X multiplier
@@ -575,6 +645,7 @@ int main(int argc, char **argv) {
 				usage(argv[0]);
 			}
 			break;
+
 		case 'o': //Set offsets
 			switch(argv[arg][2]) {
 			case 'x': // Set X offset
@@ -603,18 +674,23 @@ int main(int argc, char **argv) {
 		// case 't':
 		// 	sendRot = true;
 		// break;
+
 		case 'f':
 			filter = true;
 			break;
+
 		case 'k':
 			kitchenMode = true;
 			break;
+
 		case 'q': // Set Quartz Composer mode
 			oscFunc = &genQCMsg;
 			break;
+
 		case 'r':
 			mirrorMode = false;
 			break;
+
 		default:
 			printf("Unrecognized option.\n");
 			usage(argv[0]);
@@ -624,6 +700,12 @@ int main(int argc, char **argv) {
 		else
 			arg ++;
 	}
+
+	/*
+	float coords[3] = {1, 2, 3};
+	jointDescriptions.sendOSC(XN_SKEL_HEAD, NULL, 0, coords);
+	jointDescriptions.sendOSC(XN_SKEL_WAIST, NULL, 0, coords);
+	*/
 
 	if (kitchenMode)
 		nDimensions = 2;
