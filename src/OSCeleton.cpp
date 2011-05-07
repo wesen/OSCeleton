@@ -28,9 +28,10 @@
 #include <stdexcept>
 #include <vector>
 #include <sstream>
+#include <algorithm>
+#include <locale>
 
 #include <string.h>
-#include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
 #include <sys/types.h>
@@ -49,20 +50,29 @@
  * Helper functions
  *
  ***************************************************************************/
-// trim from start
-static inline std::string &ltrim(std::string &s) {
-	s.erase(s.begin(), std::find_if(s.begin(), s.end(), std::not1(std::ptr_fun<int, int>(std::isspace))));
-	return s;
+const std::string whiteSpaces( " \f\n\r\t\v" );
+
+
+void trimRight( std::string& str,
+      const std::string& trimChars = whiteSpaces )
+{
+   std::string::size_type pos = str.find_last_not_of( trimChars );
+   str.erase( pos + 1 );    
 }
 
-// trim from end
-static inline std::string &rtrim(std::string &s) {
-	s.erase(std::find_if(s.rbegin(), s.rend(), std::not1(std::ptr_fun<int, int>(std::isspace))).base(), s.end());
-	return s;
+
+void trimLeft( std::string& str,
+      const std::string& trimChars = whiteSpaces )
+{
+   std::string::size_type pos = str.find_first_not_of( trimChars );
+   str.erase( 0, pos );
 }
 
-static inline std::string &trim(std::string &s) {
-	return ltrim(rtrim(s));
+
+void trim( std::string& str, const std::string& trimChars = whiteSpaces )
+{
+   trimRight( str, trimChars );
+   trimLeft( str, trimChars );
 }
 
 std::vector<std::string> &split(const std::string &s, char delim, std::vector<std::string> &elems) {
@@ -105,11 +115,11 @@ public:
 	int dimension;
 
 public:
-	OSCMessageTranslation(char *_addr, uint8_t _dimension) : addressPattern(_addr), dimension(_dimension) {
+	OSCMessageTranslation(char *_addr, int _dimension) : addressPattern(_addr), dimension(_dimension) {
 	}
 
 	OSCMessageTranslation(const char *str) {
-		char *split = strchr(str, ' ');
+		const char *split = strchr(str, ' ');
 		if (split == NULL) {
 			throw TranslationParseException();
 		}
@@ -208,14 +218,16 @@ public:
 			while (myfile.good()) {
 				string line;
 				getline(myfile, line);
-				line = trim(line);
+				trim(line);
 				if (line[0] == '#') {
 					continue;
 				}
 				vector<string> elems = split(line, '=');
 				if (elems.size() == 2) {
-					string joint = trim(elems[0]);
-					string oscMessage = trim(elems[1]);
+					trim(elems[0]);
+					trim(elems[1]);
+					string joint = elems[0];
+					string oscMessage = elems[1];
 					addOSCTranslation(joint.c_str(), oscMessage.c_str());
 				}
 			}
@@ -270,7 +282,7 @@ JointDescriptions jointDescriptions;
 char *ADDRESS = "127.0.0.1";
 int PORT = 7110;
 
-#define OUTPUT_BUFFER_SIZE 1024
+#define OUTPUT_BUFFER_SIZE 40000
 char osc_buffer[OUTPUT_BUFFER_SIZE];
 UdpTransmitSocket *transmitSocket;
 
@@ -555,7 +567,7 @@ void main_loop() {
 
 
 int main(int argc, char **argv) {
-	unsigned int arg = 1,
+	int arg = 1,
 				 require_argument = 0;
 	XnMapOutputMode mapMode;
 	XnStatus nRetVal = XN_STATUS_OK;
